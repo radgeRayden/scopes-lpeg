@@ -10,7 +10,7 @@ fn print-double-column (left-str right-str)
     #   returns a 40 character wide string + padding if necessary, and the rest of
         the original string.
     fn make-column-line (str)
-        local line = ((array i8 40))
+        local line : (array i8 40)
         # space init
         for i in (range 40)
             (line @ i) = (char " ") 
@@ -96,28 +96,36 @@ fn interpreted-match? (input program)
     let program-length = (countof program)
 
     using import struct
-    struct OpStack plain
+    struct Stack plain
         _data_ : (array i32 400)
-        stack-pointer : i32
+        stack-pointer : i32 = -1
         inline empty? (self)
-            self.stack-pointer == 0 
+            self.stack-pointer == -1 
         fn push (self value)
             #TODO: what if the stack is full?
             imply value i32
             self.stack-pointer += 1
-            self._data_ @ self.stack-pointer = value
+            (self._data_ @ self.stack-pointer) = value
+            ;
         fn pop (self)
             #TODO: what do we do if the stack is empty?
             if ('empty? self)
+                hide-traceback;
                 error "stack was empty but tried to pop"
             let elem = (self._data_ @ self.stack-pointer)
             self.stack-pointer -= 1
             elem
         fn peek (self)
             (self._data_ @ self.stack-pointer)
-    local v-stack = (OpStack)
-    'push v-stack 0 # instruction
-    'push v-stack 0 # input position
+        fn poke (self index new-value)
+            (self._data_ @ index) = new-value
+            ;
+        fn swap-head (self new-value)
+            'poke self self.stack-pointer new-value
+            ;
+            
+    local v-stack = (Stack)
+    # local backtrack-stack = (Stack)
         
     # LPEG parsing machine, as per Roberto's paper (A Text Pattern-Matching Tool based on Parsing Expression Grammars, 2008)
       Registers:
@@ -149,7 +157,7 @@ fn interpreted-match? (input program)
             include (import C) "stdio.h"
             print "input position: "
             if ((countof input) <= 100)
-                local input-indicator-display = ((array i8 100))
+                local input-indicator-display : (array i8 100)
                 # space init
                 for i in (range 100)
                     (input-indicator-display @ i) = (char " ") 
@@ -165,10 +173,14 @@ fn interpreted-match? (input program)
                 on the left column we'll print the stack, and on the right the program and a pointer to the current
                 instruction.
             print-double-column "STACK" "INSTRUCTIONS"
+            # this ad-hoc line indicates whether we are in a fail state.
+            let fail-prefix = 
+                ? (program-index == -1) "--> " "    "
+            print-double-column "" (.. fail-prefix ".x. FAIL")
             let inspector-display-size = (max (v-stack.stack-pointer as i32) ((countof program) as i32))
             for i in (range inspector-display-size)
                 let stack-line =
-                    if (i < v-stack.stack-pointer)
+                    if (i <= v-stack.stack-pointer)
                         let stack-value = (v-stack._data_ @ i)
                         if (i % 2 == 0)
                             # even stack entries are instructions
@@ -176,7 +188,10 @@ fn interpreted-match? (input program)
                             .. "[" (tostring stack-value) "] "(tostring ins) ", " ('value->string ins)
                         else
                             # and odd are input positions
-                            .. "input [" (tostring stack-value) "] -> " ((input @ stack-value) as string)
+                            if (stack-value != -1)
+                                .. "input [" (tostring stack-value) "] -> " ((input @ stack-value) as string)
+                            else
+                                "no backtrack - pending call"
                     else
                         ""
                 let program-line =
@@ -209,8 +224,9 @@ fn interpreted-match? (input program)
                 else
                     _ input-position -1
             case Call (relative-address)
+                # so when this returns, it goes to the next instruction
                 'push v-stack (program-index + 1)
-                'push v-stack input-position
+                'push v-stack -1
                 _ input-position (program-index + (deref relative-address))
             case Jump (relative-address)
                 _ input-position (program-index + (deref relative-address))
@@ -319,24 +335,23 @@ static-if main-module?
     # ordered choice
     # S <- ab / cd
     local ab/cd-pattern =
-        arrayof Instruction
-            Instruction.Choice      3 #L1
-            Instruction.Call        5 #p1
-            Instruction.Commit      3 #L2
-            # label: L1
-            Instruction.Call        6 #p2
-            dupe Instruction.End         
-            # L2
-            dupe Instruction.Fail
-            # p1
-            Instruction.Char        (char "a")
-            Instruction.Char        (char "b")
-            dupe Instruction.Return     
-            # p2
-            Instruction.Char        (char "c")
-            Instruction.Char        (char "d")
-            dupe Instruction.Return      
+        arrayof Instruction                             
+            Instruction.Choice      3  #L1              # 0
+            Instruction.Call        5  #p1              # 1
+            Instruction.Commit      9  #L2              # 2
+            # label: L1                                 
+            Instruction.Call        6  #p2              # 3
+            Instruction.Jump        8                   # 4
+            # p1                             
+            Instruction.Char        (char "a")          # 5
+            Instruction.Char        (char "b")          # 6
+            dupe Instruction.Return                     # 7
+            # p2                             
+            Instruction.Char        (char "c")          # 8
+            Instruction.Char        (char "d")          # 9
+            dupe Instruction.Return                     # 10
             # label: l2
+            dupe Instruction.End                        # 11
 
     print "pattern: `ab / cd`"
     test-match "aaaabcdef" ab/cd-pattern true
