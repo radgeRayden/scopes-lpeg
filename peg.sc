@@ -1,5 +1,43 @@
-# import .core.string
-        
+spice char (c)
+    let c = (c as string)
+    let c = (char c)
+    `c
+run-stage;
+
+# some helper functions for debug
+fn print-double-column (left-str right-str)
+    # each column is 40 chars wide, the separator occupies 3 chars
+    #   returns a 40 character wide string + padding if necessary, and the rest of
+        the original string.
+    fn make-column-line (str)
+        local line = ((array i8 40))
+        # space init
+        for i in (range 40)
+            (line @ i) = (char " ") 
+            
+        let rest =
+            fold (rest counter = str 0) for c in str
+                # we necessarily break on new line even if it's still too narrow
+                if ((c == (char "\n")) or (counter == 40))
+                    break rest counter
+                else
+                    (line @ counter) = c          
+                    _ (rslice rest 1) (counter + 1)
+        _ (string &line 40:usize) rest
+            
+    label print-line
+        loop (leftL rightL = left-str right-str)
+            let left-line left-remainder = (make-column-line leftL) 
+            let right-line right-remainder = (make-column-line rightL)
+            sc_write left-line
+            sc_write "\t"
+            sc_write right-line
+            sc_write "\n"
+
+            if (((countof left-remainder) == 0) and ((countof right-remainder) == 0)) 
+                merge print-line
+            _ left-remainder right-remainder
+         
 using import enum
 
 enum Instruction
@@ -8,8 +46,6 @@ enum Instruction
     Choice : i32
     Call : i32
     Commit : i32
-    # tags aren't movable so I did this to be able to put them into an array. Will probably fix it
-        on the enum module side.
     Return
     Capture
     End
@@ -111,17 +147,40 @@ fn interpreted-match? (input program)
                     dupe Instruction.Fail 
                     
             include (import C) "stdio.h"
-            print "current input: " current-character
-            print "stack: "
-            for n in (range 0 v-stack.stack-pointer)
-                if (n == (v-stack.stack-pointer - 1))
-                    sc_write "--> " 
-                else
-                    sc_write "    "
-                if (n % 2 == 0)
-                    sc_write ((tostring (deref (program @ n))) .. "\n")
-                else
-                    sc_write (((input @ n) as string) .. "\n")
+            print "input position: "
+            if ((countof input) <= 100)
+                local input-indicator-display = ((array i8 100))
+                # space init
+                for i in (range 100)
+                    (input-indicator-display @ i) = (char " ") 
+                for i in (range (countof input))
+                    if (i == input-position)
+                        (input-indicator-display @ i) = (char "^")
+                        break;
+                print input
+                print (string &input-indicator-display 100)
+            else 
+                print "input too big to be displayed"
+            #   debug printing:
+                on the left column we'll print the stack, and on the right the program and a pointer to the current
+                instruction.
+            print-double-column "STACK" "INSTRUCTIONS"
+            let inspector-display-size = (max (v-stack.stack-pointer as i32) ((countof program) as i32))
+            for i in (range inspector-display-size)
+                let stack-line =
+                    if (i < v-stack.stack-pointer)
+                        tostring (v-stack._data_ @ i)
+                    else
+                        ""
+                let program-line =
+                    if (i < (countof program))
+                        let prefix = (? (i == program-index) "--> " "    ")
+                        let ins = (deref (program @ i))
+                        .. prefix (tostring ins) ", " ('value->string ins)
+                    else
+                        ""
+                print-double-column stack-line program-line
+                        
             C.getchar;
 
             dispatch instruction
@@ -169,12 +228,6 @@ fn interpreted-match? (input program)
                 not-implemented "Capture"
             default
                 not-implemented "Unknown"
-
-spice char (c)
-    let c = (c as string)
-    let c = (char c)
-    `c
-run-stage;
     
 fn compiled-match? (input size)
     let input-length = size
