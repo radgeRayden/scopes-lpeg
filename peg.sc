@@ -169,14 +169,21 @@ fn interpreted-match? (input program)
             for i in (range inspector-display-size)
                 let stack-line =
                     if (i < v-stack.stack-pointer)
-                        tostring (v-stack._data_ @ i)
+                        let stack-value = (v-stack._data_ @ i)
+                        if (i % 2 == 0)
+                            # even stack entries are instructions
+                            let ins = (deref (program @ stack-value))
+                            .. "[" (tostring stack-value) "] "(tostring ins) ", " ('value->string ins)
+                        else
+                            # and odd are input positions
+                            .. "input [" (tostring stack-value) "] -> " ((input @ stack-value) as string)
                     else
                         ""
                 let program-line =
                     if (i < (countof program))
                         let prefix = (? (i == program-index) "--> " "    ")
                         let ins = (deref (program @ i))
-                        .. prefix (tostring ins) ", " ('value->string ins)
+                        .. prefix "." (tostring i) ". "(tostring ins) ", " ('value->string ins)
                     else
                         ""
                 print-double-column stack-line program-line
