@@ -99,14 +99,17 @@ fn interpreted-match? (input program)
     struct Stack plain
         _data_ : (array i32 400)
         stack-pointer : i32 = -1
+
         inline empty? (self)
             self.stack-pointer == -1 
+
         fn push (self value)
             #TODO: what if the stack is full?
             imply value i32
             self.stack-pointer += 1
             (self._data_ @ self.stack-pointer) = value
             ;
+
         fn pop (self)
             #TODO: what do we do if the stack is empty?
             if ('empty? self)
@@ -115,17 +118,22 @@ fn interpreted-match? (input program)
             let elem = (self._data_ @ self.stack-pointer)
             self.stack-pointer -= 1
             elem
-        fn peek (self)
+
+        inline... peek 
+        case (self : this-type,)
             (self._data_ @ self.stack-pointer)
+        case (self : this-type, index : i32)
+            (self._data_ @ index)
+
         fn poke (self index new-value)
             (self._data_ @ index) = new-value
             ;
+
         fn swap-head (self new-value)
             'poke self self.stack-pointer new-value
             ;
             
     local v-stack = (Stack)
-    # local backtrack-stack = (Stack)
         
     # LPEG parsing machine, as per Roberto's paper (A Text Pattern-Matching Tool based on Parsing Expression Grammars, 2008)
       Registers:
@@ -140,10 +148,14 @@ fn interpreted-match? (input program)
         error ("Invalid or non implemented parsing instruction: " .. instruction)
         
     label match?
+        # tag definitions for identifying the machine status
+        let :no-backtrack = -1  
+        let :instruction-fail = -1
         loop (
-                input-position program-index = 
-                0              0
+                input-position match-start program-index = 
+                0              0           0
             )
+            # exit condition for complete failure
             if (input-position == input-length)
                 merge match? false 0
 
@@ -154,6 +166,7 @@ fn interpreted-match? (input program)
                 else 
                     dupe Instruction.Fail 
                     
+            #TODO: clean this up, maybe at least put it in a closure and call it depending on whether we use the debug flag or not
             include (import C) "stdio.h"
             print "input position: "
             if ((countof input) <= 100)
@@ -175,7 +188,7 @@ fn interpreted-match? (input program)
             print-double-column "STACK" "INSTRUCTIONS"
             # this ad-hoc line indicates whether we are in a fail state.
             let fail-prefix = 
-                ? (program-index == -1) "--> " "    "
+                ? (program-index == :instruction-fail) "--> " "    "
             print-double-column "" (.. fail-prefix ".x. FAIL")
             let inspector-display-size = (max (v-stack.stack-pointer as i32) ((countof program) as i32))
             for i in (range inspector-display-size)
@@ -188,7 +201,7 @@ fn interpreted-match? (input program)
                             .. "[" (tostring stack-value) "] "(tostring ins) ", " ('value->string ins)
                         else
                             # and odd are input positions
-                            if (stack-value != -1)
+                            if (stack-value != :no-backtrack)
                                 .. "input [" (tostring stack-value) "] -> " ((input @ stack-value) as string)
                             else
                                 "no backtrack - pending call"
@@ -203,50 +216,52 @@ fn interpreted-match? (input program)
                         ""
                 print-double-column stack-line program-line
                         
-            C.getchar;
+            # C.getchar;
 
             dispatch instruction
             case Fail ()
-                let initial-position = (deref ('pop v-stack))
-                let return-address = (deref ('pop v-stack))
-                if ('empty? v-stack)
-                    # start of the pattern
-                    'push v-stack 0
-                    'push v-stack (initial-position + 1)
-                    _ (initial-position + 1) 0
-                else
-                    _ initial-position return-address
+                loop ()
+                    # if there aren't any choices left to pursue, advance input
+                    if ('empty? v-stack)
+                        break (match-start + 1) (match-start + 1) 0
+                    else
+                        let saved-position saved-instruction =
+                            (deref ('pop v-stack))
+                            (deref ('pop v-stack))
+                        # discard all pending calls - drops a call if there's no choice left in it
+                        if (saved-position != :no-backtrack)
+                            break saved-position saved-position saved-instruction
 
             case Char (c)
                 # if the character match succeeds, we want to advance both the input and the program
                 if (c == current-character)
-                    _ (input-position + 1) (program-index + 1)
+                    _ (input-position + 1) match-start (program-index + 1)
                 else
-                    _ input-position -1
+                    _ input-position match-start :instruction-fail
             case Call (relative-address)
                 # so when this returns, it goes to the next instruction
                 'push v-stack (program-index + 1)
-                'push v-stack -1
-                _ input-position (program-index + (deref relative-address))
+                'push v-stack :no-backtrack
+                _ input-position match-start (program-index + (deref relative-address))
             case Jump (relative-address)
-                _ input-position (program-index + (deref relative-address))
+                _ input-position match-start (program-index + (deref relative-address))
             case End ()
                 merge match? true input-position
             case Choice (relative-address)
                 let addr = (deref relative-address)
                 'push v-stack (program-index + addr)
                 'push v-stack input-position
-                _ input-position (program-index + 1)
+                _ input-position match-start (program-index + 1)
             case Return ()
-                let original-input-position = (deref ('pop v-stack))
+                let call-site = (deref ('pop v-stack))
                 let next-instruction = ((deref ('pop v-stack)) + 1)
-                _ original-input-position next-instruction
+                _ call-site match-start next-instruction
             case Commit (relative-address)
                 let original-input-position = ('pop v-stack)
                 'pop v-stack
                 'push v-stack (program-index + relative-address)
                 'push v-stack original-input-position
-                _ input-position (program-index + 1)
+                _ input-position match-start (program-index + 1)
             case Capture ()
                 not-implemented "Capture"
             default
@@ -323,15 +338,15 @@ static-if main-module?
 
     # literal match
     # S <- abc
-    # local abc-pattern =
-    #     arrayof Instruction
-    #         Instruction.Char (char "a")
-    #         Instruction.Char (char "b")
-    #         Instruction.Char (char "c")
-    #         Instruction.End none
-    # print "pattern: `abc`"
-    # test-match "aaaabcdef" abc-pattern true
-    # test-match "aaaacdef" abc-pattern false
+    local abc-pattern =
+        arrayof Instruction
+            Instruction.Char (char "a")
+            Instruction.Char (char "b")
+            Instruction.Char (char "c")
+            dupe Instruction.End 
+    print "pattern: `abc`"
+    test-match "aaaabcdef" abc-pattern true
+    test-match "aaaacdef" abc-pattern false
     # ordered choice
     # S <- ab / cd
     local ab/cd-pattern =
