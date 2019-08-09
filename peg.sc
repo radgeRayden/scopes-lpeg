@@ -218,6 +218,16 @@ fn interpreted-match? (input program)
                         
             # C.getchar;
 
+            inline save-state (input-position program-index)
+                'push v-stack program-index
+                'push v-stack input-position
+
+            inline load-state ()
+                let saved-position saved-instruction =
+                    (deref ('pop v-stack))
+                    (deref ('pop v-stack))
+                _ saved-position saved-instruction
+
             dispatch instruction
             case Fail ()
                 loop ()
@@ -225,9 +235,7 @@ fn interpreted-match? (input program)
                     if ('empty? v-stack)
                         break (match-start + 1) (match-start + 1) 0
                     else
-                        let saved-position saved-instruction =
-                            (deref ('pop v-stack))
-                            (deref ('pop v-stack))
+                        let saved-position saved-instruction = (load-state)
                         # discard all pending calls - drops a call if there's no choice left in it
                         if (saved-position != :no-backtrack)
                             break saved-position saved-position saved-instruction
@@ -238,32 +246,40 @@ fn interpreted-match? (input program)
                     _ (input-position + 1) match-start (program-index + 1)
                 else
                     _ input-position match-start :instruction-fail
+
             case Call (relative-address)
                 # so when this returns, it goes to the next instruction
-                'push v-stack (program-index + 1)
-                'push v-stack :no-backtrack
+                save-state :no-backtrack (program-index + 1)
                 _ input-position match-start (program-index + (deref relative-address))
+
             case Jump (relative-address)
                 _ input-position match-start (program-index + (deref relative-address))
+
             case End ()
                 merge match? true input-position
+
             case Choice (relative-address)
                 let addr = (deref relative-address)
-                'push v-stack (program-index + addr)
-                'push v-stack input-position
+                save-state input-position (program-index + addr)
                 _ input-position match-start (program-index + 1)
+
             case Return ()
-                let call-site = (deref ('pop v-stack))
-                let next-instruction = ((deref ('pop v-stack)) + 1)
+                let call-site next-instruction = (load-state)
                 _ call-site match-start next-instruction
+
             case Commit (relative-address)
+                #TODO: clean this; the paper also mentions an optimization to get rid of
+                       the useless pop so maybe I'll just wait until I get there and do it
+                       right.
                 let original-input-position = ('pop v-stack)
                 'pop v-stack
                 'push v-stack (program-index + relative-address)
                 'push v-stack original-input-position
                 _ input-position match-start (program-index + 1)
+
             case Capture ()
                 not-implemented "Capture"
+                
             default
                 not-implemented "Unknown"
     
@@ -344,19 +360,19 @@ static-if main-module?
             Instruction.Char (char "b")
             Instruction.Char (char "c")
             dupe Instruction.End 
-    print "pattern: `abc`"
-    test-match "aaaabcdef" abc-pattern true
-    test-match "aaaacdef" abc-pattern false
+    # print "pattern: `abc`"
+    # test-match "aaaabcdef" abc-pattern true
+    # test-match "aaaacdef" abc-pattern false
     # ordered choice
     # S <- ab / cd
     local ab/cd-pattern =
         arrayof Instruction                             
             Instruction.Choice      3  #L1              # 0
-            Instruction.Call        5  #p1              # 1
+            Instruction.Call        4  #p1              # 1
             Instruction.Commit      9  #L2              # 2
             # label: L1                                 
-            Instruction.Call        6  #p2              # 3
-            Instruction.Jump        8                   # 4
+            Instruction.Call        5  #p2              # 3
+            Instruction.Jump        7                   # 4
             # p1                             
             Instruction.Char        (char "a")          # 5
             Instruction.Char        (char "b")          # 6
