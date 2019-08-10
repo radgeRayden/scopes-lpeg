@@ -1,15 +1,18 @@
-spice char (c)
-    let c = (c as string)
-    let c = (char c)
-    `c
+spice const-char (c)
+    `[(char (c as string))]
 run-stage;
 
-# some helper functions for debug
+inline char (c)
+    static-if (constant? c)
+        const-char c
+    else
+        char c
+
 fn print-double-column (left-str right-str)
     # each column is 40 chars wide, the separator occupies 3 chars
-    #   returns a 40 character wide string + padding if necessary, and the rest of
-        the original string.
     fn make-column-line (str)
+        #   returns a 40 character wide string + padding if necessary, and the rest of
+            the original string.
         local line : (array i8 40)
         # space init
         for i in (range 40)
@@ -37,7 +40,102 @@ fn print-double-column (left-str right-str)
             if (((countof left-remainder) == 0) and ((countof right-remainder) == 0)) 
                 merge print-line
             _ left-remainder right-remainder
-         
+
+# tag definitions for identifying the machine status
+let :no-backtrack = -1  
+let :instruction-fail = -1
+
+fn debug-print-stack (input input-position program program-index stack)
+    #   debug printing:
+        on the left column we'll print the stack, and on the right the program and a pointer to the current
+        instruction.
+    include (import C) "stdio.h"
+    print "input position: "
+    if ((countof input) <= 100)
+        local input-indicator-display : (array i8 100)
+        # space init
+        for i in (range 100)
+            (input-indicator-display @ i) = (char " ") 
+        for i in (range (countof input))
+            if (i == input-position)
+                (input-indicator-display @ i) = (char "^")
+                break;
+        print input
+        print (string &input-indicator-display 100)
+    else 
+        print "input too big to be displayed"
+    print-double-column "STACK" "INSTRUCTIONS"
+    # this ad-hoc line indicates whether we are in a fail state.
+    let fail-prefix = 
+        ? (program-index == :instruction-fail) "--> " "    "
+    print-double-column "" (.. fail-prefix ".x. FAIL")
+    let inspector-display-size = (max (stack.stack-pointer as i32) ((countof program) as i32))
+    for i in (range inspector-display-size)
+        let stack-line =
+            if (i <= stack.stack-pointer)
+                let stack-value = (stack._data_ @ i)
+                if (i % 2 == 0)
+                    # even stack entries are instructions
+                    let ins = (deref (program @ stack-value))
+                    .. "[" (tostring stack-value) "] "(tostring ins) ", " ('value->string ins)
+                else
+                    # and odd are input positions
+                    if (stack-value != :no-backtrack)
+                        .. "input [" (tostring stack-value) "] -> " ((input @ stack-value) as string)
+                    else
+                        "no backtrack - pending call"
+            else
+                ""
+        let program-line =
+            if (i < (countof program))
+                let prefix = (? (i == program-index) "--> " "    ")
+                let ins = (deref (program @ i))
+                .. prefix "." (tostring i) ". "(tostring ins) ", " ('value->string ins)
+            else
+                ""
+        print-double-column stack-line program-line
+    # I decided to always pause on step through for simplicity
+    C.getchar;
+
+using import struct
+# a simple stack implementation to hold the choices from the matcher
+struct Stack plain
+    _data_ : (array i32 400)
+    stack-pointer : i32 = -1
+
+    inline empty? (self)
+        self.stack-pointer == -1 
+
+    fn push (self value)
+        #TODO: what if the stack is full?
+        imply value i32
+        self.stack-pointer += 1
+        (self._data_ @ self.stack-pointer) = value
+        ;
+
+    fn pop (self)
+        if ('empty? self)
+            hide-traceback;
+            error "stack was empty but tried to pop"
+        let elem = (self._data_ @ self.stack-pointer)
+        self.stack-pointer -= 1
+        elem
+
+    inline... peek 
+    case (self : this-type,)
+        (self._data_ @ self.stack-pointer)
+    case (self : this-type, index : i32)
+        (self._data_ @ index)
+
+    fn poke (self index new-value)
+        (self._data_ @ index) = new-value
+        ;
+
+    fn swap-head (self new-value)
+        'poke self self.stack-pointer new-value
+        ;
+
+                
 using import enum
 
 enum Instruction
@@ -89,50 +187,17 @@ typedef+ Instruction
         default
             ""
 
-fn interpreted-match? (input program)
+#forward declaration because of overload with optional parameter
+fn interpreted-match? (input program debug?)
+
+fn... interpreted-match? 
+case (input, program,)
+    interpreted-match? input program false
+case (input, program, debug? : bool,)
     returning bool i32
 
     let input-length = (countof input)
     let program-length = (countof program)
-
-    using import struct
-    struct Stack plain
-        _data_ : (array i32 400)
-        stack-pointer : i32 = -1
-
-        inline empty? (self)
-            self.stack-pointer == -1 
-
-        fn push (self value)
-            #TODO: what if the stack is full?
-            imply value i32
-            self.stack-pointer += 1
-            (self._data_ @ self.stack-pointer) = value
-            ;
-
-        fn pop (self)
-            #TODO: what do we do if the stack is empty?
-            if ('empty? self)
-                hide-traceback;
-                error "stack was empty but tried to pop"
-            let elem = (self._data_ @ self.stack-pointer)
-            self.stack-pointer -= 1
-            elem
-
-        inline... peek 
-        case (self : this-type,)
-            (self._data_ @ self.stack-pointer)
-        case (self : this-type, index : i32)
-            (self._data_ @ index)
-
-        fn poke (self index new-value)
-            (self._data_ @ index) = new-value
-            ;
-
-        fn swap-head (self new-value)
-            'poke self self.stack-pointer new-value
-            ;
-            
     local v-stack = (Stack)
         
     # LPEG parsing machine, as per Roberto's paper (A Text Pattern-Matching Tool based on Parsing Expression Grammars, 2008)
@@ -148,13 +213,13 @@ fn interpreted-match? (input program)
         error ("Invalid or non implemented parsing instruction: " .. instruction)
         
     label match?
-        # tag definitions for identifying the machine status
-        let :no-backtrack = -1  
-        let :instruction-fail = -1
         loop (
                 input-position match-start program-index = 
                 0              0           0
             )
+            if debug?
+                debug-print-stack input input-position program program-index v-stack
+
             # exit condition for complete failure
             if (input-position == input-length)
                 merge match? false 0
@@ -166,58 +231,6 @@ fn interpreted-match? (input program)
                 else 
                     dupe Instruction.Fail 
                     
-            #TODO: clean this up, maybe at least put it in a closure and call it depending on whether we use the debug flag or not
-            include (import C) "stdio.h"
-            print "input position: "
-            if ((countof input) <= 100)
-                local input-indicator-display : (array i8 100)
-                # space init
-                for i in (range 100)
-                    (input-indicator-display @ i) = (char " ") 
-                for i in (range (countof input))
-                    if (i == input-position)
-                        (input-indicator-display @ i) = (char "^")
-                        break;
-                print input
-                print (string &input-indicator-display 100)
-            else 
-                print "input too big to be displayed"
-            #   debug printing:
-                on the left column we'll print the stack, and on the right the program and a pointer to the current
-                instruction.
-            print-double-column "STACK" "INSTRUCTIONS"
-            # this ad-hoc line indicates whether we are in a fail state.
-            let fail-prefix = 
-                ? (program-index == :instruction-fail) "--> " "    "
-            print-double-column "" (.. fail-prefix ".x. FAIL")
-            let inspector-display-size = (max (v-stack.stack-pointer as i32) ((countof program) as i32))
-            for i in (range inspector-display-size)
-                let stack-line =
-                    if (i <= v-stack.stack-pointer)
-                        let stack-value = (v-stack._data_ @ i)
-                        if (i % 2 == 0)
-                            # even stack entries are instructions
-                            let ins = (deref (program @ stack-value))
-                            .. "[" (tostring stack-value) "] "(tostring ins) ", " ('value->string ins)
-                        else
-                            # and odd are input positions
-                            if (stack-value != :no-backtrack)
-                                .. "input [" (tostring stack-value) "] -> " ((input @ stack-value) as string)
-                            else
-                                "no backtrack - pending call"
-                    else
-                        ""
-                let program-line =
-                    if (i < (countof program))
-                        let prefix = (? (i == program-index) "--> " "    ")
-                        let ins = (deref (program @ i))
-                        .. prefix "." (tostring i) ". "(tostring ins) ", " ('value->string ins)
-                    else
-                        ""
-                print-double-column stack-line program-line
-                        
-            # C.getchar;
-
             inline save-state (input-position program-index)
                 'push v-stack program-index
                 'push v-stack input-position
@@ -364,7 +377,10 @@ static-if main-module?
     # test-match "aaaabcdef" abc-pattern true
     # test-match "aaaacdef" abc-pattern false
     # ordered choice
-    # S <- ab / cd
+    # 
+      S  <- p1 / p2
+      p1 <- ab
+      p2 <- cd
     local ab/cd-pattern =
         arrayof Instruction                             
             Instruction.Choice      3  #L1              # 0
