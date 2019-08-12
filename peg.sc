@@ -187,114 +187,125 @@ typedef+ Instruction
         default
             ""
 
-#forward declaration because of overload with optional parameter
-fn interpreted-match? (input program debug?)
 
-fn... interpreted-match? 
-case (input, program,)
-    interpreted-match? input program false
-case (input, program, debug? : bool,)
-    returning bool i32
+# we generate an specialization here so debug stuff doesn't get 
+    included if debug? is false
+@@ memo
+inline make-interpreter-function (debug?)
+    fn (input program)
+        returning bool i32
 
-    let input-length = (countof input)
-    let program-length = (countof program)
-    local v-stack = (Stack)
-        
-    # LPEG parsing machine, as per Roberto's paper (A Text Pattern-Matching Tool based on Parsing Expression Grammars, 2008)
-      Registers:
-      current instruction:
-            i32 meaning the index of the next instruction to be executed (or a special fail code, signaling the need to backtrack)
-      current subject position:
-            i32 keeps track of at which point of the input string we are looking for matches.
-      stack index
-             
-    inline not-implemented (instruction)
-        hide-traceback;
-        error ("Invalid or non implemented parsing instruction: " .. instruction)
-        
-    label match?
-        loop (
-                input-position match-start program-index = 
-                0              0           0
-            )
-            if debug?
-                debug-print-stack input input-position program program-index v-stack
+        let input-length = (countof input)
+        let program-length = (countof program)
+        local v-stack = (Stack)
+            
+        # LPEG parsing machine, as per Roberto's paper (A Text Pattern-Matching Tool based on Parsing Expression Grammars, 2008)
+          Registers:
+          current instruction:
+                i32 meaning the index of the next instruction to be executed (or a special fail code, signaling the need to backtrack)
+          current subject position:
+                i32 keeps track of at which point of the input string we are looking for matches.
+          stack index
+                 
+        inline not-implemented (instruction)
+            hide-traceback;
+            error ("Invalid or non implemented parsing instruction: " .. instruction)
+            
+        label match?
+            loop (
+                    input-position match-start program-index = 
+                    0              0           0
+                )
+                static-if debug?
+                    debug-print-stack 
+                        input 
+                        input-position 
+                        program 
+                        program-index 
+                        v-stack
 
-            # exit condition for complete failure
-            if (input-position == input-length)
-                merge match? false 0
+                # exit condition for complete failure
+                if (input-position == input-length)
+                    merge match? false 0
 
-            let current-character = (input @ input-position)
-            let instruction =
-                if (program-index >= 0) 
-                    dupe (deref (program @ program-index))
-                else 
-                    dupe Instruction.Fail 
-                    
-            inline save-state (input-position program-index)
-                'push v-stack program-index
-                'push v-stack input-position
+                let current-character = (input @ input-position)
+                let instruction =
+                    if (program-index >= 0) 
+                        dupe (deref (program @ program-index))
+                    else 
+                        dupe Instruction.Fail 
+                        
+                inline save-state (input-position program-index)
+                    'push v-stack program-index
+                    'push v-stack input-position
 
-            inline load-state ()
-                let saved-position saved-instruction =
-                    (deref ('pop v-stack))
-                    (deref ('pop v-stack))
-                _ saved-position saved-instruction
+                inline load-state ()
+                    let saved-position saved-instruction =
+                        (deref ('pop v-stack))
+                        (deref ('pop v-stack))
+                    _ saved-position saved-instruction
 
-            dispatch instruction
-            case Fail ()
-                loop ()
-                    # if there aren't any choices left to pursue, advance input
-                    if ('empty? v-stack)
-                        break (match-start + 1) (match-start + 1) 0
+                dispatch instruction
+                case Fail ()
+                    loop ()
+                        # if there aren't any choices left to pursue, advance input
+                        if ('empty? v-stack)
+                            break (match-start + 1) (match-start + 1) 0
+                        else
+                            let saved-position saved-instruction = (load-state)
+                            # discard all pending calls - drops a call if there's no choice left in it
+                            if (saved-position != :no-backtrack)
+                                break saved-position saved-position saved-instruction
+
+                case Char (c)
+                    # if the character match succeeds, we want to advance both the input and the program
+                    if (c == current-character)
+                        _ (input-position + 1) match-start (program-index + 1)
                     else
-                        let saved-position saved-instruction = (load-state)
-                        # discard all pending calls - drops a call if there's no choice left in it
-                        if (saved-position != :no-backtrack)
-                            break saved-position saved-position saved-instruction
+                        _ input-position match-start :instruction-fail
 
-            case Char (c)
-                # if the character match succeeds, we want to advance both the input and the program
-                if (c == current-character)
-                    _ (input-position + 1) match-start (program-index + 1)
-                else
-                    _ input-position match-start :instruction-fail
+                case Call (relative-address)
+                    # so when this returns, it goes to the next instruction
+                    save-state :no-backtrack (program-index + 1)
+                    _ input-position match-start (program-index + (deref relative-address))
 
-            case Call (relative-address)
-                # so when this returns, it goes to the next instruction
-                save-state :no-backtrack (program-index + 1)
-                _ input-position match-start (program-index + (deref relative-address))
+                case Jump (relative-address)
+                    _ input-position match-start (program-index + (deref relative-address))
 
-            case Jump (relative-address)
-                _ input-position match-start (program-index + (deref relative-address))
+                case End ()
+                    merge match? true input-position
 
-            case End ()
-                merge match? true input-position
+                case Choice (relative-address)
+                    let addr = (deref relative-address)
+                    save-state input-position (program-index + addr)
+                    _ input-position match-start (program-index + 1)
 
-            case Choice (relative-address)
-                let addr = (deref relative-address)
-                save-state input-position (program-index + addr)
-                _ input-position match-start (program-index + 1)
+                case Return ()
+                    let call-site next-instruction = (load-state)
+                    _ call-site match-start next-instruction
 
-            case Return ()
-                let call-site next-instruction = (load-state)
-                _ call-site match-start next-instruction
+                case Commit (relative-address)
+                    #TODO: clean this; the paper also mentions an optimization to get rid of
+                           the useless pop so maybe I'll just wait until I get there and do it
+                           right.
+                    let original-input-position = ('pop v-stack)
+                    'pop v-stack
+                    'push v-stack (program-index + relative-address)
+                    'push v-stack original-input-position
+                    _ input-position match-start (program-index + 1)
 
-            case Commit (relative-address)
-                #TODO: clean this; the paper also mentions an optimization to get rid of
-                       the useless pop so maybe I'll just wait until I get there and do it
-                       right.
-                let original-input-position = ('pop v-stack)
-                'pop v-stack
-                'push v-stack (program-index + relative-address)
-                'push v-stack original-input-position
-                _ input-position match-start (program-index + 1)
+                case Capture ()
+                    not-implemented "Capture"
+                    
+                default
+                    not-implemented "Unknown"
 
-            case Capture ()
-                not-implemented "Capture"
-                
-            default
-                not-implemented "Unknown"
+# and then the actual call handles the debug param
+inline... interpreted-match? 
+case (input, program, debug? : bool)
+    (make-interpreter-function debug?) input program
+case (input, program,)
+    (make-interpreter-function false) input program
     
 fn compiled-match? (input size)
     let input-length = size
@@ -362,25 +373,32 @@ static-if main-module?
     using import testing
     inline test-match (input pattern expected)
         let result = (interpreted-match? input pattern)
-        print "input: " input "expected: " expected ", result: " result
-        test (result == expected )
+        print "input:" (repr input) "\t" "expected:" expected "\tresult:" result
+        test (result == expected)
 
     # literal match
-    # S <- abc
+    sc_write 
+        """"pattern: 
+                S <- abc
+    print "---------------------------------------------------"
     local abc-pattern =
         arrayof Instruction
             Instruction.Char (char "a")
             Instruction.Char (char "b")
             Instruction.Char (char "c")
             dupe Instruction.End 
-    # print "pattern: `abc`"
-    # test-match "aaaabcdef" abc-pattern true
-    # test-match "aaaacdef" abc-pattern false
+    test-match "aaaabcdef" abc-pattern true
+    test-match "aaaacdef" abc-pattern false
+
+    sc_write "\n\n\n"
+
     # ordered choice
-    # 
-      S  <- p1 / p2
-      p1 <- ab
-      p2 <- cd
+    sc_write
+        """"pattern: 
+                S  <- p1 / p2
+                p1 <- ab
+                p2 <- cd
+    print "---------------------------------------------------"
     local ab/cd-pattern =
         arrayof Instruction                             
             Instruction.Choice      3  #L1              # 0
@@ -400,7 +418,7 @@ static-if main-module?
             # label: l2
             dupe Instruction.End                        # 11
 
-    print "pattern: `ab / cd`"
+
     test-match "aaaabcdef" ab/cd-pattern true
     test-match "aaaacdef" ab/cd-pattern true
     test-match "aaaacef" ab/cd-pattern false
