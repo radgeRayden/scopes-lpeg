@@ -281,18 +281,15 @@ inline make-interpreter-function (debug?)
                     _ input-position match-start (program-index + 1)
 
                 case Return ()
-                    let call-site next-instruction = (load-state)
-                    _ call-site match-start next-instruction
+                    let _disc next-instruction = (load-state)
+                    _ input-position match-start next-instruction
 
                 case Commit (relative-address)
                     #TODO: clean this; the paper also mentions an optimization to get rid of
                            the useless pop so maybe I'll just wait until I get there and do it
                            right.
-                    let original-input-position = ('pop v-stack)
-                    'pop v-stack
-                    'push v-stack (program-index + relative-address)
-                    'push v-stack original-input-position
-                    _ input-position match-start (program-index + 1)
+                    load-state; # discards the top entry on the stack
+                    _ input-position match-start (program-index + relative-address)
 
                 case Capture ()
                     not-implemented "Capture"
@@ -371,10 +368,25 @@ fn compiled-matchv2? (input size)
 
 static-if main-module?
     using import testing
-    inline test-match (input pattern expected)
-        let result = (interpreted-match? input pattern)
-        print "input:" (repr input) "\t" "expected:" expected "\tresult:" result
-        test (result == expected)
+    inline test-match (input pattern expected...)
+        let expect-match? expected-position = expected...
+        let expected-position =
+            static-if (none? expected-position) 
+                0
+            else
+                expected-position
+            
+        let matches? position = (interpreted-match? input pattern)
+        print 
+            \ "input: " (repr input)
+            \ " \texpected:" 
+            \ (.. (repr (tostring expect-match?)) ", " (repr (tostring expected-position)))
+            \ " \tresult:"
+            \ (.. (repr (tostring matches?)) ", " (repr (tostring position)))
+        test 
+            and
+                (expect-match? == matches?)
+                (expected-position == position)
 
     # literal match
     sc_write 
@@ -387,8 +399,8 @@ static-if main-module?
             Instruction.Char (char "b")
             Instruction.Char (char "c")
             dupe Instruction.End 
-    test-match "aaaabcdef" abc-pattern true
-    test-match "aaaacdef" abc-pattern false
+    # test-match "aaaabcdef" abc-pattern true 6
+    # test-match "aaaacdef" abc-pattern false
 
     sc_write "\n\n\n"
 
@@ -419,8 +431,8 @@ static-if main-module?
             dupe Instruction.End                        # 11
 
 
-    test-match "aaaabcdef" ab/cd-pattern true
-    test-match "aaaacdef" ab/cd-pattern true
+    test-match "aaaabcdef" ab/cd-pattern true 5
+    test-match "aaaacdef" ab/cd-pattern true 6
     test-match "aaaacef" ab/cd-pattern false
     test-match "bbbbdef" ab/cd-pattern false
     test-match "bbcbdef" ab/cd-pattern false
