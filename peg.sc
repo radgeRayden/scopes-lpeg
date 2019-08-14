@@ -430,7 +430,6 @@ static-if main-module?
             # label: l2
             dupe Instruction.End                        # 11
 
-
     test-match "aaaabcdef" ab/cd-pattern true 5
     test-match "aaaacdef" ab/cd-pattern true 6
     test-match "aaaacef" ab/cd-pattern false
