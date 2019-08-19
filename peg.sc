@@ -1,3 +1,7 @@
+using import enum
+using import struct
+using import Array
+
 spice const-char (c)
     `[(char (c as string))]
 run-stage;
@@ -97,7 +101,6 @@ fn debug-print-stack (input input-position program program-index stack)
     # I decided to always pause on step through for simplicity
     C.getchar;
 
-using import struct
 # a simple stack implementation to hold the choices from the matcher
 struct Stack plain
     _data_ : (array i32 400)
@@ -135,15 +138,19 @@ struct Stack plain
         'poke self self.stack-pointer new-value
         ;
 
-                
-using import enum
-
+# L versions of instructions have a Label operand, they are substituted by the
+  builder with canonical relative addresses
 enum Instruction
     Char : i8
     Jump : i32
+    JumpL : string
     Choice : i32
+    ChoiceL : string
     Call : i32
+    CallL : string
     Commit : i32
+    CommitL : string
+    Label : string
     Return
     Capture
     End
@@ -186,7 +193,6 @@ typedef+ Instruction
             (tostring addr)
         default
             ""
-
 
 # we generate an specialization here so debug stuff doesn't get 
     included if debug? is false
@@ -365,6 +371,50 @@ fn compiled-matchv2? (input size)
             break true (input-position + 1)
         _ false (input-position + 1)
 
+fn link-pattern (instructions)
+    # TODO:
+        - error if you define the same label twice
+    local labels = ((Array (tuple string i32)))
+    fold (program-index = 0) for instruction in instructions
+        dispatch instruction
+        case Label (name)
+            'append labels (tupleof name program-index)
+            continue program-index
+        default;
+        program-index + 1
+
+    inline retrieve-label-position (id)
+        for label* in labels
+            if ('match? (label* @ 0) id)
+                return (label* @ 1)
+        error "label not found"
+        
+    local pattern = ((Array Instruction))
+    fold (program-index = 0) for instruction in instructions
+        dispatch instruction
+        case JumpL (label-id)
+            let label-position = (retrieve-label-position label-id)
+            let label-distance = (label-position - program-index)
+            'append pattern (Instruction.Jump label-distance)
+        case ChoiceL (label-id)
+            let label-position = (retrieve-label-position label-id)
+            let label-distance = (label-position - program-index)
+            'append pattern (Instruction.Choice label-distance)
+        case CallL (label-id)
+            let label-position = (retrieve-label-position label-id)
+            let label-distance = (label-position - program-index)
+            'append pattern (Instruction.Call label-distance)
+        case CommitL (label-id)
+            let label-position = (retrieve-label-position label-id)
+            let label-distance = (label-position - program-index)
+            'append pattern (Instruction.Commit label-distance)
+        case Label (name)
+            continue program-index
+        default
+            'append pattern (dupe instruction)
+        program-index + 1
+    (deref pattern)
+
 
 static-if main-module?
     using import testing
@@ -380,9 +430,9 @@ static-if main-module?
         print 
             \ "input: " (repr input)
             \ " \texpected:" 
-            \ (.. (repr (tostring expect-match?)) ", " (repr (tostring expected-position)))
+            \ (.. (repr expect-match?) ", " (repr expected-position))
             \ " \tresult:"
-            \ (.. (repr (tostring matches?)) ", " (repr (tostring position)))
+            \ (.. (repr matches?) ", " (repr position))
         test 
             and
                 (expect-match? == matches?)
@@ -399,8 +449,8 @@ static-if main-module?
             Instruction.Char (char "b")
             Instruction.Char (char "c")
             dupe Instruction.End 
-    # test-match "aaaabcdef" abc-pattern true 6
-    # test-match "aaaacdef" abc-pattern false
+    test-match "aaaabcdef" abc-pattern true 6
+    test-match "aaaacdef" abc-pattern false
 
     sc_write "\n\n\n"
 
@@ -413,25 +463,34 @@ static-if main-module?
     print "---------------------------------------------------"
     local ab/cd-pattern =
         arrayof Instruction                             
-            Instruction.Choice      3  #L1              # 0
-            Instruction.Call        4  #p1              # 1
-            Instruction.Commit      9  #L2              # 2
-            # label: L1                                 
-            Instruction.Call        5  #p2              # 3
-            Instruction.Jump        7                   # 4
-            # p1                             
+            Instruction.ChoiceL     "L1"                # 0
+            Instruction.CallL       "p1"                # 1
+            Instruction.CommitL     "L2"                # 2
+
+            Instruction.Label       "L1"
+            Instruction.CallL       "p2"                # 3
+            Instruction.JumpL       "L2"                # 4
+
+            Instruction.Label       "p1"
             Instruction.Char        (char "a")          # 5
             Instruction.Char        (char "b")          # 6
             dupe Instruction.Return                     # 7
-            # p2                             
+
+            Instruction.Label       "p2"
             Instruction.Char        (char "c")          # 8
             Instruction.Char        (char "d")          # 9
             dupe Instruction.Return                     # 10
-            # label: l2
+
+            Instruction.Label       "L2"
             dupe Instruction.End                        # 11
 
-    test-match "aaaabcdef" ab/cd-pattern true 5
-    test-match "aaaacdef" ab/cd-pattern true 6
-    test-match "aaaacef" ab/cd-pattern false
-    test-match "bbbbdef" ab/cd-pattern false
-    test-match "bbcbdef" ab/cd-pattern false
+
+    let pattern = (link-pattern ab/cd-pattern)
+    for ins in pattern
+        print ins ('value->string ins)
+    sc_write "\n"
+    test-match "aaaabcdef" pattern true 5
+    test-match "aaaacdef" pattern true 6
+    test-match "aaaacef" pattern false
+    test-match "bbbbdef" pattern false
+    test-match "bbcbdef" pattern false
