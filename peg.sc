@@ -32,18 +32,17 @@ fn print-double-column (left-str right-str)
                     _ (rslice rest 1) (counter + 1)
         _ (string &line 40:usize) rest
             
-    label print-line
-        loop (leftL rightL = left-str right-str)
-            let left-line left-remainder = (make-column-line leftL) 
-            let right-line right-remainder = (make-column-line rightL)
-            sc_write left-line
-            sc_write "\t"
-            sc_write right-line
-            sc_write "\n"
+    loop (leftL rightL = left-str right-str)
+        let left-line left-remainder = (make-column-line leftL) 
+        let right-line right-remainder = (make-column-line rightL)
+        sc_write left-line
+        sc_write "\t"
+        sc_write right-line
+        sc_write "\n"
 
-            if (((countof left-remainder) == 0) and ((countof right-remainder) == 0)) 
-                merge print-line
-            _ left-remainder right-remainder
+        if (((countof left-remainder) == 0) and ((countof right-remainder) == 0)) 
+            break;
+        _ left-remainder right-remainder
 
 # tag definitions for identifying the machine status
 let :no-backtrack = -1  
@@ -217,91 +216,90 @@ inline make-interpreter-function (debug?)
             hide-traceback;
             error ("Invalid or non implemented parsing instruction: " .. instruction)
             
-        label match?
-            loop (
-                    input-position match-start program-index = 
-                    0              0           0
-                )
-                static-if debug?
-                    debug-print-stack 
-                        input 
-                        input-position 
-                        program 
-                        program-index 
-                        v-stack
+        loop (
+                input-position match-start program-index = 
+                0              0           0
+            )
+            static-if debug?
+                debug-print-stack 
+                    input 
+                    input-position 
+                    program 
+                    program-index 
+                    v-stack
 
-                # exit condition for complete failure
-                if (input-position == input-length)
-                    merge match? false 0
+            # exit condition for complete failure
+            if (input-position == input-length)
+                break false 0
 
-                let current-character = (input @ input-position)
-                let instruction =
-                    if (program-index >= 0) 
-                        dupe (deref (program @ program-index))
-                    else 
-                        dupe Instruction.Fail 
-                        
-                inline save-state (input-position program-index)
-                    'push v-stack program-index
-                    'push v-stack input-position
-
-                inline load-state ()
-                    let saved-position saved-instruction =
-                        (deref ('pop v-stack))
-                        (deref ('pop v-stack))
-                    _ saved-position saved-instruction
-
-                dispatch instruction
-                case Fail ()
-                    loop ()
-                        # if there aren't any choices left to pursue, advance input
-                        if ('empty? v-stack)
-                            break (match-start + 1) (match-start + 1) 0
-                        else
-                            let saved-position saved-instruction = (load-state)
-                            # discard all pending calls - drops a call if there's no choice left in it
-                            if (saved-position != :no-backtrack)
-                                break saved-position saved-position saved-instruction
-
-                case Char (c)
-                    # if the character match succeeds, we want to advance both the input and the program
-                    if (c == current-character)
-                        _ (input-position + 1) match-start (program-index + 1)
-                    else
-                        _ input-position match-start :instruction-fail
-
-                case Call (relative-address)
-                    # so when this returns, it goes to the next instruction
-                    save-state :no-backtrack (program-index + 1)
-                    _ input-position match-start (program-index + (deref relative-address))
-
-                case Jump (relative-address)
-                    _ input-position match-start (program-index + (deref relative-address))
-
-                case End ()
-                    merge match? true input-position
-
-                case Choice (relative-address)
-                    let addr = (deref relative-address)
-                    save-state input-position (program-index + addr)
-                    _ input-position match-start (program-index + 1)
-
-                case Return ()
-                    let _disc next-instruction = (load-state)
-                    _ input-position match-start next-instruction
-
-                case Commit (relative-address)
-                    #TODO: clean this; the paper also mentions an optimization to get rid of
-                           the useless pop so maybe I'll just wait until I get there and do it
-                           right.
-                    load-state; # discards the top entry on the stack
-                    _ input-position match-start (program-index + relative-address)
-
-                case Capture ()
-                    not-implemented "Capture"
+            let current-character = (input @ input-position)
+            let instruction =
+                if (program-index >= 0) 
+                    dupe (deref (program @ program-index))
+                else 
+                    dupe Instruction.Fail 
                     
-                default
-                    not-implemented "Unknown"
+            inline save-state (input-position program-index)
+                'push v-stack program-index
+                'push v-stack input-position
+
+            inline load-state ()
+                let saved-position saved-instruction =
+                    (deref ('pop v-stack))
+                    (deref ('pop v-stack))
+                _ saved-position saved-instruction
+
+            dispatch instruction
+            case Fail ()
+                loop ()
+                    # if there aren't any choices left to pursue, advance input
+                    if ('empty? v-stack)
+                        break (match-start + 1) (match-start + 1) 0
+                    else
+                        let saved-position saved-instruction = (load-state)
+                        # discard all pending calls - drops a call if there's no choice left in it
+                        if (saved-position != :no-backtrack)
+                            break saved-position saved-position saved-instruction
+
+            case Char (c)
+                # if the character match succeeds, we want to advance both the input and the program
+                if (c == current-character)
+                    _ (input-position + 1) match-start (program-index + 1)
+                else
+                    _ input-position match-start :instruction-fail
+
+            case Call (relative-address)
+                # so when this returns, it goes to the next instruction
+                save-state :no-backtrack (program-index + 1)
+                _ input-position match-start (program-index + (deref relative-address))
+
+            case Jump (relative-address)
+                _ input-position match-start (program-index + (deref relative-address))
+
+            case End ()
+                break true input-position
+
+            case Choice (relative-address)
+                let addr = (deref relative-address)
+                save-state input-position (program-index + addr)
+                _ input-position match-start (program-index + 1)
+
+            case Return ()
+                let _disc next-instruction = (load-state)
+                _ input-position match-start next-instruction
+
+            case Commit (relative-address)
+                #TODO: clean this; the paper also mentions an optimization to get rid of
+                       the useless pop so maybe I'll just wait until I get there and do it
+                       right.
+                load-state; # discards the top entry on the stack
+                _ input-position match-start (program-index + relative-address)
+
+            case Capture ()
+                not-implemented "Capture"
+                
+            default
+                not-implemented "Unknown"
 
 # and then the actual call handles the debug param
 inline... interpreted-match? 
