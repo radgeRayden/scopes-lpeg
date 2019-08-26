@@ -193,6 +193,7 @@ typedef+ Instruction
         default
             ""
 
+
 # we generate an specialization here so debug stuff doesn't get 
     included if debug? is false
 @@ memo
@@ -232,12 +233,12 @@ inline make-interpreter-function (debug?)
             if (input-position == input-length)
                 break false 0
 
-            let current-character = (input @ input-position)
+            let :fail = (view (Instruction.Fail))
             let instruction =
                 if (program-index >= 0) 
-                    dupe (deref (program @ program-index))
+                    (deref (program @ program-index))
                 else 
-                    dupe Instruction.Fail 
+                    :fail
                     
             inline save-state (input-position program-index)
                 'push v-stack program-index
@@ -263,6 +264,7 @@ inline make-interpreter-function (debug?)
 
             case Char (c)
                 # if the character match succeeds, we want to advance both the input and the program
+                let current-character = (input @ input-position)
                 if (c == current-character)
                     _ (input-position + 1) match-start (program-index + 1)
                 else
@@ -289,9 +291,6 @@ inline make-interpreter-function (debug?)
                 _ input-position match-start next-instruction
 
             case Commit (relative-address)
-                #TODO: clean this; the paper also mentions an optimization to get rid of
-                       the useless pop so maybe I'll just wait until I get there and do it
-                       right.
                 load-state; # discards the top entry on the stack
                 _ input-position match-start (program-index + relative-address)
 
@@ -385,7 +384,7 @@ static-if main-module?
             Instruction.Char (char "a")
             Instruction.Char (char "b")
             Instruction.Char (char "c")
-            dupe Instruction.End 
+            Instruction.End;
     test-match "aaaabcdef" abc-pattern true 6
     test-match "aaaacdef" abc-pattern false
 
@@ -411,15 +410,15 @@ static-if main-module?
             Instruction.Label       "p1"
             Instruction.Char        (char "a")          # 5
             Instruction.Char        (char "b")          # 6
-            dupe Instruction.Return                     # 7
+            Instruction.Return;                         # 7
 
             Instruction.Label       "p2"
             Instruction.Char        (char "c")          # 8
             Instruction.Char        (char "d")          # 9
-            dupe Instruction.Return                     # 10
+            Instruction.Return;                         # 10
 
             Instruction.Label       "L2"
-            dupe Instruction.End                        # 11
+            Instruction.End;                            # 11
 
 
     let pattern = (link-pattern ab/cd-pattern)
