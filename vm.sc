@@ -155,7 +155,6 @@ enum Instruction
     End
     Fail
 
-typedef+ Instruction
     fn __tostring (self)
         dispatch self
         case Char (c)
@@ -192,7 +191,6 @@ typedef+ Instruction
             (tostring addr)
         default
             ""
-
 
 # we generate an specialization here so debug stuff doesn't get 
     included if debug? is false
