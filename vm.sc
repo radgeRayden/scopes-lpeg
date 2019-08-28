@@ -148,6 +148,10 @@ struct Stack plain
         'poke self self.stack-pointer new-value
         ;
 
+enum CaptureType plain
+    Text
+    Position
+    
 # L versions of instructions have a Label operand, they are substituted by the
   builder with canonical relative addresses
 enum Instruction
@@ -161,6 +165,7 @@ enum Instruction
     Commit : i32
     CommitL : string
     Label : string
+    Capture : (tuple (position = i32) (capture-type = CaptureType))
     Return
     Capture
     End
@@ -200,6 +205,8 @@ enum Instruction
             (tostring addr)
         case Commit (addr)
             (tostring addr)
+        case Capture (capture-info)
+            .. "{" (repr capture-info.position) ", " (repr capture-info.capture-type) "}"
         default
             ""
 
@@ -208,7 +215,21 @@ enum Instruction
 @@ memo
 inline make-interpreter-function (debug?)
     fn (input program)
-        returning bool i32
+        struct PatternCapture
+            # where in the input to start capturing
+            capture-start : i32
+            # index of the first instruction relevant to the capture.
+              The 'program' will be played back to record the capture after the matching process,
+              stopping where the corresponding end instruction is found.
+            program-index : i32
+
+        let CaptureList = (Array PatternCapture)
+        enum ProcessedCapture
+            Text : string
+            Position : i32
+        let ProcessedCaptureList = (Array ProcessedCapture)
+            
+        returning bool i32 (unique-type ProcessedCaptureList 0)
 
         let input-length = (countof input)
         let program-length = (countof program)
@@ -280,48 +301,46 @@ inline make-interpreter-function (debug?)
                     if (c == current-character)
                         _ (input-position + 1) match-start (program-index + 1)
                     else
-                        let saved-position saved-instruction = (load-state)
-                        # discard all pending calls - drops a call if there's no choice left in it
-                        if (saved-position != :no-backtrack)
-                            break saved-position saved-position saved-instruction
+                        _ input-position match-start (MatchStatus.Failure as i32)
 
-            case Char (c)
-                # if the character match succeeds, we want to advance both the input and the program
-                let current-character = (input @ input-position)
-                if (c == current-character)
-                    _ (input-position + 1) match-start (program-index + 1)
-                else
-                    _ input-position match-start :instruction-fail
+                case Call (relative-address)
+                    # so when this returns, it goes to the next instruction
+                    save-state MatchStatus.PendingCall (program-index + 1)
+                    _ input-position match-start (program-index + (deref relative-address))
 
-            case Call (relative-address)
-                # so when this returns, it goes to the next instruction
-                save-state :no-backtrack (program-index + 1)
-                _ input-position match-start (program-index + (deref relative-address))
+                case Jump (relative-address)
+                    _ input-position match-start (program-index + (deref relative-address))
 
-            case Jump (relative-address)
-                _ input-position match-start (program-index + (deref relative-address))
+                case End ()
+                    break true input-position
 
-            case End ()
-                break true input-position
+                case Choice (relative-address)
+                    let addr = (deref relative-address)
+                    save-state input-position (program-index + addr)
+                    _ input-position match-start (program-index + 1)
 
-            case Choice (relative-address)
-                let addr = (deref relative-address)
-                save-state input-position (program-index + addr)
-                _ input-position match-start (program-index + 1)
+                case Return ()
+                    let _disc next-instruction = (load-state)
+                    _ input-position match-start next-instruction
 
-            case Return ()
-                let _disc next-instruction = (load-state)
-                _ input-position match-start next-instruction
+                case Commit (relative-address)
+                    load-state; # discards the top entry on the stack
+                    _ input-position match-start (program-index + relative-address)
+
+                case Capture (capture-info)
+                    let capture-type = capture-info.capture-type
+                    # for now we'll only deal with position captures and simple string captures
+
+                    not-implemented "Capture"
 
             case Commit (relative-address)
                 load-state; # discards the top entry on the stack
                 _ input-position match-start (program-index + relative-address)
 
-            case Capture ()
-                not-implemented "Capture"
-                
-            default
-                not-implemented "Unknown"
+                default
+                    not-implemented "Unknown"
+        local processed-capture-list : ProcessedCaptureList
+        _ suceeded? end-position (deref processed-capture-list)
 
 # and then the actual call handles the debug param
 inline... interpreted-match? 
