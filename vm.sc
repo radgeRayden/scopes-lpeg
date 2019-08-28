@@ -352,19 +352,24 @@ case (input, program,)
 fn link-pattern (instructions)
     # TODO:
         - error if you define the same label twice
-    local labels = ((Array (tuple string i32)))
+    let LabelList =
+        Array 
+            tuple 
+                name = string
+                index = i32
+    local labels = (LabelList)
     fold (program-index = 0) for instruction in instructions
         dispatch instruction
         case Label (name)
-            'append labels (tupleof name program-index)
+            'append labels (tupleof (name = name) (index = program-index))
             continue program-index
         default;
         program-index + 1
 
     inline retrieve-label-position (id)
         for label* in labels
-            if ('match? (label* @ 0) id)
-                return (label* @ 1)
+            if ('match? label*.name id)
+                return label*.index
         error "label not found"
         
     local pattern = ((Array Instruction))
@@ -439,36 +444,37 @@ static-if main-module?
                 p1 <- ab
                 p2 <- cd
     print "---------------------------------------------------"
-    local ab/cd-pattern =
-        arrayof Instruction                             
-            Instruction.ChoiceL     "L1"                # 0
-            Instruction.CallL       "p1"                # 1
-            Instruction.CommitL     "L2"                # 2
+    let ab/cd-pattern =
+        link-pattern
+            local ins =
+                arrayof Instruction                             
+                    Instruction.ChoiceL     "L1"                # 0
+                    Instruction.CallL       "p1"                # 1
+                    Instruction.CommitL     "L2"                # 2
 
-            Instruction.Label       "L1"
-            Instruction.CallL       "p2"                # 3
-            Instruction.JumpL       "L2"                # 4
+                    Instruction.Label       "L1"
+                    Instruction.CallL       "p2"                # 3
+                    Instruction.JumpL       "L2"                # 4
 
-            Instruction.Label       "p1"
-            Instruction.Char        (char "a")          # 5
-            Instruction.Char        (char "b")          # 6
-            Instruction.Return;                         # 7
+                    Instruction.Label       "p1"
+                    Instruction.Char        (char "a")          # 5
+                    Instruction.Char        (char "b")          # 6
+                    Instruction.Return;                         # 7
 
-            Instruction.Label       "p2"
-            Instruction.Char        (char "c")          # 8
-            Instruction.Char        (char "d")          # 9
-            Instruction.Return;                         # 10
+                    Instruction.Label       "p2"
+                    Instruction.Char        (char "c")          # 8
+                    Instruction.Char        (char "d")          # 9
+                    Instruction.Return;                         # 10
 
-            Instruction.Label       "L2"
-            Instruction.End;                            # 11
+                    Instruction.Label       "L2"
+                    Instruction.End;                            # 11
 
 
-    let pattern = (link-pattern ab/cd-pattern)
-    for ins in pattern
+    for ins in ab/cd-pattern
         print ins ('value->string ins)
     sc_write "\n"
-    test-match "aaaabcdef" pattern true 5
-    test-match "aaaacdef" pattern true 6
-    test-match "aaaacef" pattern false
-    test-match "bbbbdef" pattern false
-    test-match "bbcbdef" pattern false
+    test-match "aaaabcdef" ab/cd-pattern true 5
+    test-match "aaaacdef" ab/cd-pattern true 6
+    test-match "aaaacef" ab/cd-pattern false
+    test-match "bbbbdef" ab/cd-pattern false
+    test-match "bbcbdef" ab/cd-pattern false
