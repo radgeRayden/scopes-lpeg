@@ -4,6 +4,11 @@ using import Array
 
 spice const-char (c)
     `[(char (c as string))]
+
+spice unique-type (T i)
+    let T = (T as type)
+    let i = (i as i32)
+    `[('unique-type T i)]
 run-stage;
 
 inline char (c)
@@ -11,6 +16,9 @@ inline char (c)
         const-char c
     else
         char c
+
+inline pointer* (T)
+    mutable (pointer T)
 
 fn print-double-column (left-str right-str)
     # each column is 40 chars wide, the separator occupies 3 chars
