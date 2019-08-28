@@ -167,7 +167,6 @@ enum Instruction
     Label : string
     Capture : (tuple (position = i32) (capture-type = CaptureType))
     Return
-    Capture
     End
     Fail
 
@@ -333,9 +332,6 @@ inline make-interpreter-function (debug?)
 
                     not-implemented "Capture"
 
-            case Commit (relative-address)
-                load-state; # discards the top entry on the stack
-                _ input-position match-start (program-index + relative-address)
 
                 default
                     not-implemented "Unknown"
