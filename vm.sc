@@ -53,8 +53,11 @@ fn print-double-column (left-str right-str)
         _ left-remainder right-remainder
 
 # tag definitions for identifying the machine status
-let :no-backtrack = -1  
-let :instruction-fail = -1
+enum MatchStatus plain
+    # used as program index if an instruction has failed
+    Failure = -1
+    # pushed on the stack to mark that we shouldn't backtrack if stepping out of a call
+    PendingCall = -1
 
 fn debug-print-stack (input input-position program program-index stack)
     #   debug printing:
@@ -78,7 +81,7 @@ fn debug-print-stack (input input-position program program-index stack)
     print-double-column "STACK" "INSTRUCTIONS"
     # this ad-hoc line indicates whether we are in a fail state.
     let fail-prefix = 
-        ? (program-index == :instruction-fail) "--> " "    "
+        ? (program-index == MatchStatus.Failure) "--> " "    "
     print-double-column "" (.. fail-prefix ".x. FAIL")
     let inspector-display-size = (max (stack.stack-pointer as i32) ((countof program) as i32))
     for i in (range inspector-display-size)
@@ -91,7 +94,7 @@ fn debug-print-stack (input input-position program program-index stack)
                     .. "[" (tostring stack-value) "] "(tostring ins) ", " ('value->string ins)
                 else
                     # and odd are input positions
-                    if (stack-value != :no-backtrack)
+                    if (stack-value != MatchStatus.PendingCall)
                         .. "input [" (tostring stack-value) "] -> " ((input @ stack-value) as string)
                     else
                         "no backtrack - pending call"
@@ -223,45 +226,59 @@ inline make-interpreter-function (debug?)
             hide-traceback;
             error ("Invalid or non implemented parsing instruction: " .. instruction)
             
-        loop (
-                input-position match-start program-index = 
-                0              0           0
-            )
-            static-if debug?
-                debug-print-stack 
-                    input 
-                    input-position 
-                    program 
-                    program-index 
-                    v-stack
+        let suceeded? end-position =
+            loop (
+                    input-position match-start program-index = 
+                    0              0           0
+                )
+                static-if debug?
+                    debug-print-stack 
+                        input 
+                        input-position 
+                        program 
+                        program-index 
+                        v-stack
 
-            # exit condition for complete failure
-            if (input-position == input-length)
-                break false 0
+                # exit condition for complete failure
+                if (input-position == input-length)
+                    break false 0
 
-            let :fail = (view (Instruction.Fail))
-            let instruction =
-                if (program-index >= 0) 
-                    (deref (program @ program-index))
-                else 
-                    :fail
-                    
-            inline save-state (input-position program-index)
-                'push v-stack program-index
-                'push v-stack input-position
+                let fail-instruction = (view (Instruction.Fail))
+                let instruction =
+                    if (program-index >= 0) 
+                        (deref (program @ program-index))
+                    else 
+                        fail-instruction
+                        
+                inline save-state (input-position program-index)
+                    input-position := input-position as i32
+                    program-index := program-index as i32
+                    'push v-stack program-index
+                    'push v-stack input-position
 
-            inline load-state ()
-                let saved-position saved-instruction =
-                    (deref ('pop v-stack))
-                    (deref ('pop v-stack))
-                _ saved-position saved-instruction
+                inline load-state ()
+                    let saved-position saved-instruction =
+                        (deref ('pop v-stack))
+                        (deref ('pop v-stack))
+                    _ saved-position saved-instruction
 
-            dispatch instruction
-            case Fail ()
-                loop ()
-                    # if there aren't any choices left to pursue, advance input
-                    if ('empty? v-stack)
-                        break (match-start + 1) (match-start + 1) 0
+                dispatch instruction
+                case Fail ()
+                    loop ()
+                        # if there aren't any choices left to pursue, advance input
+                        if ('empty? v-stack)
+                            break (match-start + 1) (match-start + 1) 0
+                        else
+                            let saved-position saved-instruction = (load-state)
+                            # discard all pending calls - drops a call if there's no choice left in it
+                            if (saved-position != MatchStatus.PendingCall)
+                                break saved-position saved-position saved-instruction
+
+                case Char (c)
+                    # if the character match succeeds, we want to advance both the input and the program
+                    let current-character = (input @ input-position)
+                    if (c == current-character)
+                        _ (input-position + 1) match-start (program-index + 1)
                     else
                         let saved-position saved-instruction = (load-state)
                         # discard all pending calls - drops a call if there's no choice left in it
