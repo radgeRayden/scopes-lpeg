@@ -259,17 +259,23 @@ inline make-interpreter-function (debug?)
                         program-index 
                         v-stack
 
-                # exit condition for complete failure
-                if (input-position == input-length)
-                    break false 0
-
                 let fail-instruction = (view (Instruction.Fail))
                 let instruction =
                     if (program-index >= 0) 
                         (deref (program @ program-index))
                     else 
                         fail-instruction
-                        
+
+                # exit condition for complete failure
+                if 
+                    and
+                        (input-position == input-length)
+                        # this avoids mistakenly matching false when the end of the pattern coincides with the end of the input.
+                          it's cheap because of the ordered `and` and the string comparison boils down to a hash comparison.
+                        (tostring instruction) != (tostring (Instruction.End))
+                    print "exiting"
+                    break false 0
+
                 inline save-state (input-position program-index)
                     input-position := input-position as i32
                     program-index := program-index as i32
