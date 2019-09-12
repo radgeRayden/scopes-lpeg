@@ -1,6 +1,8 @@
 using import enum
 using import struct
 using import Array
+let pp       = (import .pretty-print)
+let enum-ext = (import .enum-extension)
 
 spice const-char (c)
     `[(char (c as string))]
@@ -19,38 +21,6 @@ inline char (c)
 
 inline pointer* (T)
     mutable (pointer T)
-
-fn print-double-column (left-str right-str)
-    # each column is 40 chars wide, the separator occupies 3 chars
-    fn make-column-line (str)
-        #   returns a 40 character wide string + padding if necessary, and the rest of
-            the original string.
-        local line : (array i8 40)
-        # space init
-        for i in (range 40)
-            (line @ i) = (char " ") 
-            
-        let rest =
-            fold (rest counter = str 0) for c in str
-                # we necessarily break on new line even if it's still too narrow
-                if ((c == (char "\n")) or (counter == 40))
-                    break rest counter
-                else
-                    (line @ counter) = c          
-                    _ (rslice rest 1) (counter + 1)
-        _ (string &line 40:usize) rest
-            
-    loop (leftL rightL = left-str right-str)
-        let left-line left-remainder = (make-column-line leftL) 
-        let right-line right-remainder = (make-column-line rightL)
-        sc_write left-line
-        sc_write "\t"
-        sc_write right-line
-        sc_write "\n"
-
-        if (((countof left-remainder) == 0) and ((countof right-remainder) == 0)) 
-            break;
-        _ left-remainder right-remainder
 
 # tag definitions for identifying the machine status
 enum MatchStatus plain
@@ -78,12 +48,17 @@ fn debug-print-stack (input input-position program program-index stack)
         print (string &input-indicator-display 100)
     else 
         print "input too big to be displayed"
-    print-double-column "STACK" "INSTRUCTIONS"
+    # print-double-column "STACK" "INSTRUCTIONS"
+    pp.print-row 120 " " "STACK" "INSTRUCTIONS"
     # this ad-hoc line indicates whether we are in a fail state.
     let fail-prefix = 
         ? (program-index == MatchStatus.Failure) "--> " "    "
-    print-double-column "" (.. fail-prefix ".x. FAIL")
-    let inspector-display-size = (max (stack.stack-pointer as i32) ((countof program) as i32))
+    pp.print-row 120 " " ""
+        .. fail-prefix ".x. " (default-styler 'style-error "FAIL")
+    # previously casted stack-pointer to usize but turns out it has to be signed because
+      default value is -1.
+    inspector-display-size := 
+        max stack.stack-pointer ((countof program) as i32)
     for i in (range inspector-display-size)
         let stack-line =
             if (i <= stack.stack-pointer)
@@ -91,7 +66,7 @@ fn debug-print-stack (input input-position program program-index stack)
                 if (i % 2 == 0)
                     # even stack entries are instructions
                     let ins = (deref (program @ stack-value))
-                    .. "[" (tostring stack-value) "] "(tostring ins) ", " ('value->string ins)
+                    .. "[" (tostring stack-value) "] " ('tag-repr ins) ", " ('payload-repr ins)
                 else
                     # and odd are input positions
                     if (stack-value != MatchStatus.PendingCall)
@@ -104,15 +79,15 @@ fn debug-print-stack (input input-position program program-index stack)
             if (i < (countof program))
                 let prefix = (? (i == program-index) "--> " "    ")
                 let ins = (deref (program @ i))
-                .. prefix "." (tostring i) ". "(tostring ins) ", " ('value->string ins)
+                .. prefix "." (tostring i) ". "('tag-repr ins) ", " ('payload-repr ins)
             else
                 ""
-        print-double-column stack-line program-line
+        pp.print-row 120 " " stack-line program-line
     # I decided to always pause on step through for simplicity
     C.getchar;
 
 # a simple stack implementation to hold the choices from the matcher
-struct Stack plain
+struct Stack
     _data_ : (array i32 400)
     stack-pointer : i32 = -1
 
@@ -150,7 +125,16 @@ struct Stack plain
 
 enum CaptureType plain
     Text
+    # when this type is used, the instruction should be inserted at the
+      exact point in the pattern where the position must be captured,
+      as there's nothing to play back.
     Position
+
+enum ProcessedCapture
+    Text : string
+    Position : i32
+run-stage;
+                
     
 # L versions of instructions have a Label operand, they are substituted by the
   builder with canonical relative addresses
@@ -165,67 +149,38 @@ enum Instruction
     Commit : i32
     CommitL : string
     Label : string
-    Capture : (tuple (position = i32) (capture-type = CaptureType))
+    Capture : (tuple (offset = i32) (capture-type = CaptureType))
     Return
     End
     Fail
+    DebugBreak
 
-    fn __tostring (self)
-        dispatch self
-        case Char (c)
-            "Char"
-        case Jump (pos)
-            "Jump"
-        case Choice (addr)
-            "Choice"
-        case Call (addr)
-            "Call"
-        case Commit (addr)
-            "Commit"
-        case Return ()
-            "Return"
-        case Capture ()
-            "Capture"
-        case End ()
-            "End"
-        case Fail ()
-            "Fail"
-        default
-            "unknown"
-    fn value->string (self)
-        dispatch self
-        case Char (c)
-            (c as string)
-        case Jump (pos)
-            (tostring pos)
-        case Choice (addr)
-            (tostring addr)
-        case Call (addr)
-            (tostring addr)
-        case Commit (addr)
-            (tostring addr)
-        case Capture (capture-info)
-            .. "{" (repr capture-info.position) ", " (repr capture-info.capture-type) "}"
-        default
-            ""
+    fn payload-repr (self)
+        enum-ext.build-generic-dispatch 
+            this-type 
+            self 
+            inline (index tag payload)
+                static-if ((typeof payload) == i8)
+                    payload as string
+                else
+                    repr payload
 
 # we generate an specialization here so debug stuff doesn't get 
     included if debug? is false
 @@ memo
-inline make-interpreter-function (debug?)
+inline make-interpreter-function (debug-mode?)
     fn (input program)
-        struct PatternCapture
-            # where in the input to start capturing
-            capture-start : i32
-            # index of the first instruction relevant to the capture.
-              The 'program' will be played back to record the capture after the matching process,
-              stopping where the corresponding end instruction is found.
-            program-index : i32
+        let PatternCapture =
+            tuple
+                # where in the input to start capturing
+                capture-start = i32
+                # index of the first instruction relevant to the capture.
+                  The 'program' will be played back to record the capture after the matching process,
+                  stopping where the corresponding end instruction is found.
+                program-index = i32
 
         let CaptureList = (Array PatternCapture)
-        enum ProcessedCapture
-            Text : string
-            Position : i32
+        local raw-captures = (CaptureList)
         let ProcessedCaptureList = (Array ProcessedCapture)
             
         returning bool i32 (unique-type ProcessedCaptureList 0)
@@ -246,18 +201,20 @@ inline make-interpreter-function (debug?)
             hide-traceback;
             error ("Invalid or non implemented parsing instruction: " .. instruction)
             
+        local debug-stepping? = false
         let suceeded? end-position =
             loop (
                     input-position match-start program-index = 
                     0              0           0
                 )
-                static-if debug?
-                    debug-print-stack 
-                        input 
-                        input-position 
-                        program 
-                        program-index 
-                        v-stack
+                static-if debug-mode?
+                    if debug-stepping?
+                        debug-print-stack 
+                            input 
+                            input-position 
+                            program 
+                            program-index 
+                            v-stack
 
                 let fail-instruction = (view (Instruction.Fail))
                 let instruction =
@@ -270,15 +227,12 @@ inline make-interpreter-function (debug?)
                 if 
                     and
                         (input-position == input-length)
-                        # this avoids mistakenly matching false when the end of the pattern coincides with the end of the input.
-                          it's cheap because of the ordered `and` and the string comparison boils down to a hash comparison.
-                        (tostring instruction) != (tostring (Instruction.End))
-                    print "exiting"
+                        # this avoids mistakenly matching false when the end of the pattern 
+                          coincides with the end of the input.
+                        instruction != (Instruction.End)
                     break false 0
 
                 inline save-state (input-position program-index)
-                    input-position := input-position as i32
-                    program-index := program-index as i32
                     'push v-stack program-index
                     'push v-stack input-position
 
@@ -335,13 +289,48 @@ inline make-interpreter-function (debug?)
                 case Capture (capture-info)
                     let capture-type = capture-info.capture-type
                     # for now we'll only deal with position captures and simple string captures
+                    switch capture-type
+                    case CaptureType.Text
+                        ;
+                    case CaptureType.Position
+                        'append 
+                            raw-captures
+                            PatternCapture
+                                capture-start = input-position
+                                program-index = program-index
+                        ;
+                    default
+                        ;
 
-                    not-implemented "Capture"
-
+                    _ input-position match-start (program-index + 1)
+                case DebugBreak ()
+                    debug-stepping? = true
+                    _ input-position match-start (program-index + 1)
 
                 default
-                    not-implemented "Unknown"
+                    not-implemented "Unknown" #('tag-repr instruction)
         local processed-capture-list : ProcessedCaptureList
+        for cap in raw-captures
+            # for now, everything is a position capture 
+            :: playback
+            let program-count = ((countof program) as i32)
+            let program-index = (deref cap.program-index)
+            for index in (range program-index program-count)
+                let ins = (deref (program @ index))
+                dispatch ins
+                case Capture (capture-info)
+                    let capture-type = capture-info.capture-type
+                    switch capture-type
+                    case CaptureType.Position
+                        'append 
+                            processed-capture-list 
+                            ProcessedCapture.Position cap.capture-start
+                        merge playback
+                    default
+                        ;
+                default
+                    ;
+            playback ::
         _ suceeded? end-position (deref processed-capture-list)
 
 # and then the actual call handles the debug param
@@ -401,30 +390,48 @@ fn link-pattern (instructions)
     (deref pattern)
 
 
-static-if main-module?
+fn run-tests ()
     using import testing
-    inline test-match (input pattern expected...)
-        let expect-match? expected-position = expected...
-        let expected-position =
-            static-if (none? expected-position) 
-                0
-            else
-                expected-position
-            
-        let matches? position = (interpreted-match? input pattern)
+    fn test-match (input pattern expected...)
+        let expect-match? expected-position expected-captures = expected...
+        let matches? position captures = (interpreted-match? input pattern true)
+
         print 
             \ "input: " (repr input)
             \ " \texpected:" 
             \ (.. (repr expect-match?) ", " (repr expected-position))
             \ " \tresult:"
             \ (.. (repr matches?) ", " (repr position))
+
+        static-if (not (none? expected-captures))
+            # this avoids a segfault, fail immediately if the capture lists
+              don't match in size.
+            test ((countof expected-captures) == (countof captures))
+            print "captures:"
+            for i in (range (countof expected-captures))
+                let exp-cap = (expected-captures @ i)
+                io-write! 
+                    .. 
+                        (default-styler 'style-number (tostring i))
+                        ": \texpected: "
+                        'payload-repr exp-cap
+                        "\tresult: "
+                        'payload-repr (captures @ i)
+                        "\n"
+                test 
+                    (expected-captures @ i) == (captures @ i)
+                        
         test 
             and
                 (expect-match? == matches?)
-                (expected-position == position)
+                do
+                    static-if (not (none? expected-position))
+                        expected-position == position
+                    else
+                        true
 
     # literal match
-    sc_write 
+    io-write! 
         """"pattern: 
                 S <- abc
     print "---------------------------------------------------"
@@ -437,10 +444,10 @@ static-if main-module?
     test-match "aaaabcdef" abc-pattern true 6
     test-match "aaaacdef" abc-pattern false
 
-    sc_write "\n\n\n"
+    io-write! "\n\n\n"
 
     # ordered choice
-    sc_write
+    io-write!
         """"pattern: 
                 S  <- p1 / p2
                 p1 <- ab
@@ -473,10 +480,42 @@ static-if main-module?
 
 
     for ins in ab/cd-pattern
-        print ins ('value->string ins)
-    sc_write "\n"
+        print ins ('payload-repr ins)
+    io-write! "\n"
     test-match "aaaabcdef" ab/cd-pattern true 5
     test-match "aaaacdef" ab/cd-pattern true 6
     test-match "aaaacef" ab/cd-pattern false
     test-match "bbbbdef" ab/cd-pattern false
     test-match "bbcbdef" ab/cd-pattern false
+
+    # position capture
+    io-write!
+        """"pattern:
+                S  <- a{}bc
+    print "---------------------------------------------------"
+    local a_pcap_bc-pattern =
+        arrayof Instruction
+            Instruction.Char    (char "a")
+            Instruction.Capture 
+                tupleof 
+                    offset = 0 
+                    capture-type = CaptureType.Position
+            Instruction.Char    (char "b")
+            Instruction.Char    (char "c")
+            Instruction.End;
+            
+    for ins in a_pcap_bc-pattern 
+        print ins ('payload-repr ins)
+    io-write! "\n"
+    local pcap-list = (arrayof ProcessedCapture (ProcessedCapture.Position 1))
+
+    test-match "abc" a_pcap_bc-pattern true 3 pcap-list
+    io-write! "\n"
+
+static-if main-module?
+    run-tests;
+else
+    let
+        interpreted-match? 
+        run-tests
+    locals;
